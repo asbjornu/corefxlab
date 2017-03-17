@@ -3,6 +3,7 @@
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Threading;
 
 namespace System.IO.Pipelines
 {
@@ -11,6 +12,9 @@ namespace System.IO.Pipelines
     /// </summary>
     internal class Pipe : IPipe, IPipeReader, IPipeWriter, IReadableBufferAwaiter, IWritableBufferAwaiter
     {
+        private static readonly Action<object> _signalReaderAwaitable = state => ((Pipe)state).ReaderCancellationRequested();
+        private static readonly Action<object> _signalWriterAwaitable = state => ((Pipe)state).WriterCancellationRequested();
+
         // This sync objects protects the following state:
         // 1. _commitHead & _commitHeadIndex
         // 2. _length
@@ -314,7 +318,7 @@ namespace System.IO.Pipelines
             } // and if zero, just do nothing; don't need to validate tail etc
         }
 
-        internal WritableBufferAwaitable FlushAsync()
+        internal WritableBufferAwaitable FlushAsync(CancellationToken cancellationToken = default(CancellationToken))
         {
             Action awaitable;
             lock (_sync)
@@ -326,6 +330,8 @@ namespace System.IO.Pipelines
                 }
 
                 awaitable = _readerAwaitable.Complete();
+
+                _writerAwaitable.AttachToken(cancellationToken, _signalWriterAwaitable, this);
             }
 
             TrySchedule(_readerScheduler, awaitable);
@@ -485,13 +491,16 @@ namespace System.IO.Pipelines
         /// Asynchronously reads a sequence of bytes from the current <see cref="IPipeReader"/>.
         /// </summary>
         /// <returns>A <see cref="PipeAwaitable"/> representing the asynchronous read operation.</returns>
-        ReadableBufferAwaitable IPipeReader.ReadAsync()
+        ReadableBufferAwaitable IPipeReader.ReadAsync(CancellationToken token)
         {
             if (_readerCompletion.IsCompleted)
             {
                 ThrowHelper.ThrowInvalidOperationException(ExceptionResource.NoReadingAllowed, _readerCompletion.Location);
             }
-
+            lock (_sync)
+            {
+                _readerAwaitable.AttachToken(token, _signalReaderAwaitable, this);
+            }
             return new ReadableBufferAwaitable(this);
         }
 
@@ -607,6 +616,26 @@ namespace System.IO.Pipelines
                 awaitable = _writerAwaitable.OnCompleted(continuation, ref _readerCompletion);
             }
             TrySchedule(_writerScheduler, awaitable);
+        }
+
+        private void ReaderCancellationRequested()
+        {
+            Action action;
+            lock (_sync)
+            {
+                action = _readerAwaitable.Cancel();
+            }
+            TrySchedule(_readerScheduler, action);
+        }
+
+        private void WriterCancellationRequested()
+        {
+            Action action;
+            lock (_sync)
+            {
+                action = _writerAwaitable.Cancel();
+            }
+            TrySchedule(_writerScheduler, action);
         }
 
         public IPipeReader Reader => this;
