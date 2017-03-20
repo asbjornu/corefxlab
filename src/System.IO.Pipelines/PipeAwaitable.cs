@@ -30,7 +30,7 @@ namespace System.IO.Pipelines
             {
                 _cancellationTokenRegistration.Dispose();
                 _cancellationToken = cancellationToken;
-                if (_cancellationToken != CancellationToken.None)
+                if (_cancellationToken.CanBeCanceled)
                 {
                     _cancellationToken.ThrowIfCancellationRequested();
                     _cancellationTokenRegistration = _cancellationToken.Register(callback, state);
@@ -70,8 +70,6 @@ namespace System.IO.Pipelines
 
         public Action OnCompleted(Action continuation, ref PipeCompletion completion)
         {
-            _cancellationToken.ThrowIfCancellationRequested();
-
             var awaitableState = _state;
             if (_state == _awaitableIsNotCompleted)
             {
