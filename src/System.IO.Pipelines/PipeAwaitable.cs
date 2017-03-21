@@ -22,11 +22,12 @@ namespace System.IO.Pipelines
             _state = completed ? _awaitableIsCompleted : _awaitableIsNotCompleted;
         }
 
-        public void AttachToken(CancellationToken cancellationToken, Action<object> callback, object state)
+        public CancellationTokenRegistration AttachToken(CancellationToken cancellationToken, Action<object> callback, object state)
         {
+            CancellationTokenRegistration oldRegistration;
             if (cancellationToken != _cancellationToken)
             {
-                _cancellationTokenRegistration.Dispose();
+                oldRegistration = _cancellationTokenRegistration;
                 _cancellationToken = cancellationToken;
                 if (_cancellationToken.CanBeCanceled)
                 {
@@ -34,6 +35,7 @@ namespace System.IO.Pipelines
                     _cancellationTokenRegistration = _cancellationToken.Register(callback, state);
                 }
             }
+            return oldRegistration;
         }
 
         public Action Complete()
