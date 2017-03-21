@@ -10,7 +10,6 @@ namespace System.IO.Pipelines
     {
         private static readonly Action _awaitableIsCompleted = () => { };
         private static readonly Action _awaitableIsNotCompleted = () => { };
-        private static readonly Action<object> _cancelOperation = (state) => { };
 
         private CancelledState _cancelledState;
         private Action _state;
@@ -22,7 +21,6 @@ namespace System.IO.Pipelines
             _cancelledState = CancelledState.NotCancelled;
             _state = completed ? _awaitableIsCompleted : _awaitableIsNotCompleted;
         }
-
 
         public void AttachToken(CancellationToken cancellationToken, Action<object> callback, object state)
         {
@@ -54,12 +52,14 @@ namespace System.IO.Pipelines
         public void Reset()
         {
             if (_state == _awaitableIsCompleted &&
-                _cancelledState != CancelledState.CancellationRequested)
+                _cancelledState != CancelledState.CancellationRequested &&
+                _cancelledState != CancelledState.CancellationPreRequested)
             {
                 _state = _awaitableIsNotCompleted;
             }
 
-            // Change the state from observed -> not cancelled. We only want to reset the cancelled state if it was observed
+            // Change the state from observed -> not cancelled.
+            // We only want to reset the cancelled state if it was observed
             if (_cancelledState == CancelledState.CancellationObserved)
             {
                 _cancelledState = CancelledState.NotCancelled;
@@ -80,7 +80,8 @@ namespace System.IO.Pipelines
             {
                 return continuation;
             }
-            else if (!ReferenceEquals(awaitableState, _awaitableIsNotCompleted))
+
+            if (!ReferenceEquals(awaitableState, _awaitableIsNotCompleted))
             {
                 completion.TryComplete(ThrowHelper.GetInvalidOperationException(ExceptionResource.NoConcurrentOperation));
 
@@ -95,19 +96,37 @@ namespace System.IO.Pipelines
 
         public Action Cancel()
         {
-            _cancelledState = CancelledState.CancellationRequested;
-            return Complete();
+            var action = Complete();
+            _cancelledState = action == null ?
+                CancelledState.CancellationPreRequested :
+                CancelledState.CancellationRequested;
+            return action;
         }
 
         public bool ObserveCancelation()
         {
-            _cancellationToken.ThrowIfCancellationRequested();
+            if (_cancelledState == CancelledState.NotCancelled)
+            {
+                return false;
+            }
 
-            if (_cancelledState == CancelledState.CancellationRequested)
+            bool isPrerequested = _cancelledState == CancelledState.CancellationPreRequested;
+
+            if (_cancelledState == CancelledState.CancellationRequested || isPrerequested)
             {
                 _cancelledState = CancelledState.CancellationObserved;
+
+                // Do not reset awaitable if we were not awaiting in the first place
+                if (!isPrerequested)
+                {
+                    Reset();
+                }
+
+                _cancellationToken.ThrowIfCancellationRequested();
+
                 return true;
             }
+
             return false;
         }
 
@@ -119,8 +138,9 @@ namespace System.IO.Pipelines
         private enum CancelledState
         {
             NotCancelled = 0,
-            CancellationRequested = 1,
-            CancellationObserved = 2
+            CancellationObserved = 1,
+            CancellationPreRequested = 2,
+            CancellationRequested = 3,
         }
     }
 }
